@@ -13,9 +13,10 @@
  *   EXCLUDE        Comma-separated words to drop. e.g. "youth,team"
  *   CAL_NAME       Calendar name. Default "Bouldering Project Classes".
  *   API_KEY        Only if the public widget key below stops working.
+ *   HEADER_MODE    Which request style to use: browser (default), browser_origin, minimal, bare_key.
  *
  * Subscribe URL: https://<your-worker>.workers.dev/classes.ics
- * Check pages:   /debug  (the classes it found)   /raw  (the API's raw reply)
+ * Check pages:   /debug (classes found)  /raw (API's raw reply)  /test (tries each request style)
  */
 
 export default {
@@ -24,7 +25,7 @@ export default {
     const cache = caches.default;
     const cacheKey = new Request(url.origin + url.pathname, request);
 
-    if (url.pathname !== "/debug" && url.pathname !== "/raw") {
+    if (!["/debug", "/raw", "/test"].includes(url.pathname)) {
       const hit = await cache.match(cacheKey);
       if (hit) return hit;
     }
@@ -33,12 +34,31 @@ export default {
       const tz = env.TIMEZONE || "America/Chicago";
       LOCATION_FALLBACK = env.LOCATION_NAME || "";
       const days = parseInt(env.DAYS_AHEAD || "21", 10);
+      if (url.pathname === "/test") {
+        const loc = (env.LOCATION_IDS || "6").split(",")[0].trim();
+        const n = new Date();
+        const q = new URLSearchParams({
+          startDT: n.toISOString(),
+          endDT: new Date(n.getTime() + 86400000).toISOString(),
+          locationId: loc, page: "1", pageSize: "5",
+        });
+        const results = {};
+        for (const [name, headers] of Object.entries(headerVariants(env, loc))) {
+          try {
+            const r = await fetch(`${API_BASE}?${q}`, { headers });
+            results[name] = `${r.status} ${(await r.text()).slice(0, 150)}`;
+          } catch (e) {
+            results[name] = "error: " + e.message;
+          }
+        }
+        return new Response(JSON.stringify(results, null, 2), { headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
       if (url.pathname === "/raw") {
         const n = new Date();
         const data = await fetchPage(env, (env.LOCATION_IDS || "6").split(",")[0].trim(),
           n.toISOString(), new Date(n.getTime() + 2 * 86400000).toISOString(), 1);
         return new Response(JSON.stringify(data, null, 2).slice(0, 20000),
-          { headers: { "content-type": "application/json" } });
+          { headers: { "content-type": "text/plain; charset=utf-8" } });
       }
       const raw = await fetchSchedule(env, days);
       let events = extractEvents(raw);
@@ -47,7 +67,7 @@ export default {
       if (url.pathname === "/debug") {
         return new Response(
           JSON.stringify({ count: events.length, sample: events.slice(0, 10) }, null, 2),
-          { headers: { "content-type": "application/json" } }
+          { headers: { "content-type": "text/plain; charset=utf-8" } }
         );
       }
 
@@ -77,15 +97,27 @@ const PAGE_SIZE = 50;
 const MAX_PAGES = 20;
 const CHUNK_DAYS = 7;
 
-function apiHeaders(env) {
-  return {
+const BROWSER_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_6_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/158.0.8127.86 Mobile/15E148 Safari/604.1";
+
+// Header sets to try, in order. "browser" copies the request the schedule page makes.
+function headerVariants(env, locationId) {
+  const base = {
     accept: "application/json, text/plain, */*",
     authorization: env.TENANT || "boulderingproject",
     "x-api-key": env.API_KEY || PUBLIC_WIDGET_KEY,
-    origin: PORTAL,
-    referer: PORTAL + "/schedule",
-    "user-agent": "Mozilla/5.0 (personal calendar feed)",
   };
+  const referer = `${PORTAL}/schedule?scheduleView=week&locationIds=${locationId}`;
+  return {
+    browser: { ...base, "user-agent": BROWSER_UA, referer },
+    browser_origin: { ...base, "user-agent": BROWSER_UA, referer, origin: PORTAL },
+    minimal: { ...base },
+    bare_key: { "x-api-key": env.API_KEY || PUBLIC_WIDGET_KEY },
+  };
+}
+
+function apiHeaders(env, locationId) {
+  const v = headerVariants(env, locationId);
+  return v[env.HEADER_MODE || "browser"] || v.browser;
 }
 
 async function fetchPage(env, locationId, startISO, endISO, page) {
@@ -96,7 +128,7 @@ async function fetchPage(env, locationId, startISO, endISO, page) {
     page: String(page),
     pageSize: String(PAGE_SIZE),
   });
-  const r = await fetch(`${API_BASE}?${q}`, { headers: apiHeaders(env) });
+  const r = await fetch(`${API_BASE}?${q}`, { headers: apiHeaders(env, locationId) });
   if (!r.ok) throw new Error(`Schedule request failed: HTTP ${r.status} ${await r.text()}`);
   return r.json();
 }
