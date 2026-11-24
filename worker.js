@@ -308,6 +308,21 @@ function fold(line) {
   return parts.join("\r\n ");
 }
 
+function cleanDescription(html) {
+  if (!html) return "";
+  let t = String(html)
+    .replace(/<\/(p|li|div|h\d)>|<br\s*\/?>/gi, "\n")
+    .replace(/<li[^>]*>/gi, "• ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;|&rsquo;/g, "’");
+  return t
+    .split("\n")
+    .map((l) => l.replace(/\s+/g, " ").trim())
+    .filter((l) => l && !/class registration is now live/i.test(l) && !/^\**$/.test(l))
+    .join("\n");
+}
+
 function buildICS(events, tz, calName) {
   const now = fmtUTC(Date.now());
   const lines = [
@@ -334,7 +349,9 @@ function buildICS(events, tz, calName) {
     const descParts = [];
     if (e.instructor) descParts.push(`Instructor: ${e.instructor}`);
     if (e.spots !== undefined) descParts.push(`Spots left (at last check): ${e.spots}`);
-    if (e.description) descParts.push(e.description.replace(/<[^>]+>/g, "").trim());
+    const desc = cleanDescription(e.description);
+    if (desc) descParts.push(desc);
+    descParts.push(`Book: ${PORTAL}/schedule`);
 
     const uidBase = e.id || `${e.name}-${e.start}-${e.location}`;
     lines.push(
@@ -345,7 +362,8 @@ function buildICS(events, tz, calName) {
       dtLine("DTEND", en, tz),
       `SUMMARY:${esc((e.cancelled ? "CANCELLED: " : "") + e.name)}`
     );
-    if (e.location) lines.push(`LOCATION:${esc(e.location)}`);
+    if (e.location) lines.push(`LOCATION:${esc("Bouldering Project " + e.location)}`);
+    lines.push(`URL:${PORTAL}/schedule`);
     if (descParts.length) lines.push(`DESCRIPTION:${esc(descParts.join("\n"))}`);
     if (e.cancelled) lines.push("STATUS:CANCELLED");
     lines.push("END:VEVENT");
